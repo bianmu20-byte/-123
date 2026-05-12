@@ -1,0 +1,6 @@
+{
+  "name": "Beat Builder",
+  "description": "A drag-and-drop music looper application where you can mix different beats, effects, basses, and melodies.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": []
+}
