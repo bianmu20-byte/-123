@@ -19,7 +19,8 @@ export interface SoundDef {
   color: string;
   pattern: { note?: number; drum?: string; exp?: string }[];
   buffer?: AudioBuffer; // For recorded sounds
-  loopMode?: 'fast' | 'full'; 
+  loopMode?: 'fast' | 'full';
+  playMode?: 'pattern' | 'buffer'; // New: 'pattern' for sequenced notes, 'buffer' for direct audio playback
 }
 
 const parsePattern = (str: string) => {
@@ -86,6 +87,14 @@ export const AVAILABLE_SOUNDS: SoundDef[] = [
   { id: 't4', name: '间奏', category: 'theme', color: 'bg-yellow-500', pattern: parsePattern('g.e.c..a..c..e..') },
   { id: 't5', name: '尾奏', category: 'theme', color: 'bg-yellow-500', pattern: parsePattern('a.......a...a..a') },
   { id: 't6', name: '和声铺垫', category: 'theme', color: 'bg-yellow-500', pattern: parsePattern('h..h..h..h..h..h') },
+];
+
+// 4x4 Keyboard notes mapping (MIDI notes)
+export const KEYBOARD_NOTES = [
+  [60, 61, 62, 63], // C4, C#4, D4, D#4
+  [64, 65, 66, 67], // E4, F4, F#4, G4
+  [68, 69, 70, 71], // G#4, A4, A#4, B4
+  [72, 73, 74, 75], // C5, C#5, D5, D#5
 ];
 
 function createReverbBuffer(ctx: AudioContext) {
@@ -296,7 +305,17 @@ export class ProjectEngine {
   private scheduleNote(stepNumber: number, time: number) {
     this.slots.forEach((slot, index) => {
       if (!slot || this.mutedSlots[index]) return;
-      
+
+      // Handle buffer mode (direct audio playback)
+      if (slot.playMode === 'buffer' && slot.buffer) {
+        // Only play buffer on step 0 to avoid overlapping
+        if (stepNumber === 0) {
+          this.playBufferDirect(slot.buffer, time, index);
+        }
+        return;
+      }
+
+      // Handle pattern mode (traditional sequenced playback)
       const stepData = slot.pattern[stepNumber];
       if (!stepData) return;
 
@@ -350,6 +369,27 @@ export class ProjectEngine {
       gain.gain.linearRampToValueAtTime(0, time + measureDuration);
       source.start(time, 0, measureDuration * rateMultiplier); 
     }
+  }
+
+  private playBufferDirect(buffer: AudioBuffer, time: number, channelIndex: number) {
+    const ctx = this.ctx;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    
+    const gain = ctx.createGain();
+    source.connect(gain);
+    gain.connect(this.channels[channelIndex].input);
+
+    const shift = this.channels[channelIndex].pitchShift;
+    const rateMultiplier = Math.pow(2, shift / 12);
+    source.playbackRate.value = rateMultiplier;
+
+    // Play the entire buffer
+    const duration = buffer.duration / rateMultiplier;
+    gain.gain.setValueAtTime(1, time);
+    gain.gain.setValueAtTime(1, time + duration - 0.05);
+    gain.gain.linearRampToValueAtTime(0, time + duration);
+    source.start(time, 0, duration);
   }
 
   private playExperimental(type: string, time: number, channelIndex: number) {

@@ -1,8 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Square, UserCircle2, X, Mic, MicOff, Upload, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { AVAILABLE_SOUNDS, SoundDef, engineManager, FxParams, defaultFx } from './audio';
+import { AVAILABLE_SOUNDS, SoundDef, engineManager, FxParams, defaultFx, KEYBOARD_NOTES } from './audio';
 import { cn } from './lib/utils';
+
+const KEYBOARD_INSTRUMENT_MODES = [
+  { id: 'piano', name: 'Piano', color: 'bg-blue-500', waveform: 'sine' as OscillatorType },
+  { id: 'synth', name: 'Synth', color: 'bg-purple-500', waveform: 'sawtooth' as OscillatorType },
+  { id: 'bass', name: 'Bass', color: 'bg-cyan-500', waveform: 'square' as OscillatorType },
+  { id: 'bell', name: 'Bell', color: 'bg-amber-500', waveform: 'triangle' as OscillatorType },
+];
+
+const KEYBOARD_PHYSICAL_KEYS = ['a','s','d','f','g','h','j','k','l','q','w','e','r','t','y','u'];
+const KEYBOARD_NOTE_LABELS = ['C4','C#4','D4','D#4','E4','F4','F#4','G4','G#4','A4','A#4','B4','C5','C#5','D5','D#5'];
+const FLAT_KEYBOARD_NOTES = KEYBOARD_NOTES.flat();
 
 interface TabData {
   id: string;
@@ -43,6 +54,15 @@ export default function App() {
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Keyboard states
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [isRecordingKeyboard, setIsRecordingKeyboard] = useState(false);
+  const [keyboardInstrumentMode, setKeyboardInstrumentMode] = useState(KEYBOARD_INSTRUMENT_MODES[0].id);
+  const [recordedNotes, setRecordedNotes] = useState<{time: number, note: number}[]>([]);
+  const [pressedKeyboardNote, setPressedKeyboardNote] = useState<number | null>(null);
+  const pressedKeyTimeoutRef = useRef<NodeJS.Timeout>();
+  const recordStartTimeRef = useRef<number>(0);
+
   useEffect(() => {
     const handleStep = (e: any) => {
       const { projectId, step } = e.detail;
@@ -51,6 +71,23 @@ export default function App() {
     window.addEventListener('step', handleStep);
     return () => window.removeEventListener('step', handleStep);
   }, []);
+
+  useEffect(() => {
+    if (!isKeyboardVisible) return;
+
+    const handleKeydown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      const index = KEYBOARD_PHYSICAL_KEYS.indexOf(key);
+      if (index !== -1) {
+        e.preventDefault();
+        const note = FLAT_KEYBOARD_NOTES[index];
+        handleKeyboardKeyPress(note);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeydown);
+    return () => window.removeEventListener('keydown', handleKeydown);
+  }, [isKeyboardVisible, isRecordingKeyboard, recordedNotes]);
 
   const addNewTab = () => {
     const newId = `tab-${Date.now()}`;
@@ -256,12 +293,13 @@ export default function App() {
             
             const newSound: SoundDef = {
               id: `rec-${Date.now()}`,
-              name: `Rec ${recordedSounds.length + 1}`,
+              name: `Voice Rec ${recordedSounds.filter(s => s.id.startsWith('rec-')).length + 1}`,
               category: 'custom',
               color: 'bg-pink-500',
-              pattern: [{ note: 1 }, ...new Array(15).fill({})], 
+              pattern: [], // Empty pattern for buffer mode
               buffer: processedBuffer,
-              loopMode: 'full' 
+              loopMode: 'full',
+              playMode: 'buffer' // Use buffer mode for direct audio playback
             };
             setRecordedSounds(prev => [...prev, newSound]);
           } catch (err) {
@@ -314,6 +352,139 @@ export default function App() {
     event.target.value = '';
   };
 
+  // Keyboard functions
+  const playKeyboardNote = (note: number) => {
+    engineManager.init();
+    if (!engineManager.ctx) return;
+
+    const instrument = KEYBOARD_INSTRUMENT_MODES.find(i => i.id === keyboardInstrumentMode) ?? KEYBOARD_INSTRUMENT_MODES[0];
+    const frequency = 440 * Math.pow(2, (note - 69) / 12);
+    const now = engineManager.ctx.currentTime;
+
+    const gain = engineManager.ctx.createGain();
+    const filter = engineManager.ctx.createBiquadFilter();
+    const master = engineManager.ctx.createGain();
+
+    let mainInput: AudioNode;
+    const osc = engineManager.ctx.createOscillator();
+    osc.type = instrument.waveform;
+    osc.frequency.value = frequency * (instrument.id === 'bass' ? 0.5 : 1);
+
+    if (instrument.id === 'synth') {
+      const osc2 = engineManager.ctx.createOscillator();
+      osc2.type = 'sawtooth';
+      osc2.frequency.value = frequency * 1.01;
+      const mix = engineManager.ctx.createGain();
+      mix.gain.value = 0.5;
+      osc.connect(mix);
+      osc2.connect(mix);
+      mainInput = mix;
+      osc2.start(now);
+      osc2.stop(now + 0.35);
+    } else if (instrument.id === 'bell') {
+      const mod = engineManager.ctx.createOscillator();
+      mod.type = 'triangle';
+      mod.frequency.value = 220;
+      const modGain = engineManager.ctx.createGain();
+      modGain.gain.value = 40;
+      mod.connect(modGain);
+      modGain.connect(osc.frequency);
+      mainInput = osc;
+      mod.start(now);
+      mod.stop(now + 0.5);
+    } else {
+      mainInput = osc;
+    }
+
+    if (instrument.id === 'bass') {
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(600, now);
+      filter.Q.setValueAtTime(1.5, now);
+      gain.gain.setValueAtTime(0.35, now);
+    } else if (instrument.id === 'bell') {
+      filter.type = 'highpass';
+      filter.frequency.setValueAtTime(800, now);
+      filter.Q.setValueAtTime(1.8, now);
+      gain.gain.setValueAtTime(0.18, now);
+    } else if (instrument.id === 'synth') {
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1800, now);
+      filter.Q.setValueAtTime(1.2, now);
+      gain.gain.setValueAtTime(0.22, now);
+    } else {
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(2500, now);
+      filter.Q.setValueAtTime(0.8, now);
+      gain.gain.setValueAtTime(0.2, now);
+    }
+
+    mainInput.connect(filter);
+    filter.connect(gain);
+    gain.connect(master);
+    master.connect(engineManager.ctx.destination);
+
+    const release = instrument.id === 'bell' ? 0.6 : instrument.id === 'bass' ? 0.5 : 0.35;
+    gain.gain.setTargetAtTime(0.0001, now + 0.02, 0.08);
+    master.gain.setValueAtTime(1, now);
+
+    osc.start(now);
+    osc.stop(now + release);
+
+    if (instrument.id === 'synth') {
+      // synth second oscillator is stopped above
+    }
+  };
+
+  const startKeyboardRecording = () => {
+    setIsRecordingKeyboard(true);
+    setRecordedNotes([]);
+    recordStartTimeRef.current = Date.now();
+  };
+
+  const stopKeyboardRecording = () => {
+    setIsRecordingKeyboard(false);
+    if (recordedNotes.length > 0) {
+      // Generate pattern from recorded notes
+      const pattern = new Array(16).fill(null).map(() => ({}));
+      const totalDuration = Date.now() - recordStartTimeRef.current;
+      const stepDuration = totalDuration / 16;
+      
+      recordedNotes.forEach(({time, note}) => {
+        const step = Math.floor((time - recordStartTimeRef.current) / stepDuration);
+        if (step >= 0 && step < 16) {
+          pattern[step] = { note };
+        }
+      });
+
+      const instrument = KEYBOARD_INSTRUMENT_MODES.find(i => i.id === keyboardInstrumentMode) ?? KEYBOARD_INSTRUMENT_MODES[0];
+      const newSound: SoundDef = {
+        id: `keyboard-${Date.now()}`,
+        name: `${instrument.name} Seq ${recordedSounds.filter(s => s.id.startsWith('keyboard-')).length + 1}`,
+        category: 'custom',
+        color: instrument.color,
+        pattern: new Array(16).fill(null).map(() => ({})),
+        loopMode: 'full'
+      };
+      pattern.forEach((value, idx) => {
+        if (value && Object.keys(value).length) {
+          newSound.pattern[idx] = value;
+        }
+      });
+
+      setRecordedSounds(prev => [...prev, newSound]);
+    }
+  };
+
+  const handleKeyboardKeyPress = (note: number) => {
+    playKeyboardNote(note);
+    setPressedKeyboardNote(note);
+    clearTimeout(pressedKeyTimeoutRef.current);
+    pressedKeyTimeoutRef.current = setTimeout(() => setPressedKeyboardNote(null), 150);
+    if (isRecordingKeyboard) {
+      setRecordedNotes(prev => [...prev, { time: Date.now(), note }]);
+    }
+  };
+
   const categories = [
     { id: 'beat', name: 'Beats' },
     { id: 'effect', name: 'Effects' },
@@ -361,7 +532,7 @@ export default function App() {
                     tab.isPlaying ? "bg-emerald-500 text-white shadow-[0_0_10px_rgba(16,185,129,0.3)]" : "bg-white/10 text-white hover:bg-white/20"
                   )}
                 >
-                  {tab.isPlaying ? <Square className="w-2.5 h-2.5" fill="currentColor"/> : <Play className="w-2.5 h-2.5" fill="currentColor" className="ml-0.5"/>}
+                  {tab.isPlaying ? <Square className="w-2.5 h-2.5" fill="currentColor"/> : <Play className="w-2.5 h-2.5 ml-0.5" fill="currentColor"/>}
                 </button>
                 <span>{tab.name}</span>
                 <span className="flex gap-0.5 w-3 mt-0.5 opacity-80">
@@ -382,6 +553,13 @@ export default function App() {
           >
              <Plus size={12} strokeWidth={3} />
              New
+          </button>
+
+          <button 
+             onClick={() => setIsKeyboardVisible(!isKeyboardVisible)}
+             className="px-4 py-3 rounded-t-lg bg-black/20 hover:bg-black/40 text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-widest text-[10px] font-bold border border-transparent flex items-center gap-1.5 ml-2"
+          >
+             Keyboard
           </button>
         </div>
 
@@ -618,7 +796,7 @@ export default function App() {
                 )}
               >
                 {isRecording ? <MicOff size={10} /> : <Mic size={10} />}
-                {isRecording ? 'Stop' : 'Rec New'}
+                {isRecording ? 'Stop Voice' : 'Voice Rec'}
               </button>
             </div>
           </div>
@@ -676,6 +854,93 @@ export default function App() {
         </section>
         
       </main>
+
+      {/* Floating Keyboard */}
+      <AnimatePresence>
+        {isKeyboardVisible && (
+          <motion.div
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+            className="fixed top-0 right-0 h-full w-80 bg-zinc-900/95 backdrop-blur-xl border-l border-white/10 flex flex-col z-50"
+          >
+            <div className="flex items-center justify-between p-4 border-b border-white/10 gap-4">
+              <div>
+                <h2 className="text-sm font-bold uppercase tracking-widest text-zinc-300">4x4 Keyboard</h2>
+                <p className="mt-2 text-[10px] text-zinc-500 max-w-xs">Choose an instrument mode, then play with mouse or keyboard while the panel is open.</p>
+              </div>
+              <div className="flex flex-col gap-2 items-end">
+                <div className="flex gap-2">
+                  <button 
+                    onClick={isRecordingKeyboard ? stopKeyboardRecording : startKeyboardRecording}
+                    className={cn(
+                      "px-3 py-1 rounded text-xs font-bold uppercase tracking-widest transition-all",
+                      isRecordingKeyboard ? "bg-red-500 text-white animate-pulse" : "bg-white/10 text-zinc-400 hover:bg-white/20"
+                    )}
+                  >
+                    {isRecordingKeyboard ? 'Stop Seq' : 'Seq Rec'}
+                  </button>
+                  <button 
+                    onClick={() => setIsKeyboardVisible(false)}
+                    className="p-1 rounded bg-white/10 hover:bg-white/20 text-zinc-400 hover:text-white transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {KEYBOARD_INSTRUMENT_MODES.map((mode) => (
+                    <button
+                      key={mode.id}
+                      onClick={() => setKeyboardInstrumentMode(mode.id)}
+                      className={cn(
+                        "px-3 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all border",
+                        keyboardInstrumentMode === mode.id ? `${mode.color} text-white border-current` : "bg-white/5 text-zinc-400 border-white/10 hover:bg-white/10"
+                      )}
+                    >
+                      {mode.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex-1 p-4 flex items-center justify-center">
+              <div className="grid grid-cols-4 gap-2 w-full max-w-xs">
+                {KEYBOARD_NOTES.map((row, rowIndex) => 
+                  row.map((note, colIndex) => {
+                    const keyIndex = rowIndex * 4 + colIndex;
+                    const physicalKey = KEYBOARD_PHYSICAL_KEYS[keyIndex];
+                    const isPressed = pressedKeyboardNote === note;
+                    const instrument = KEYBOARD_INSTRUMENT_MODES.find(i => i.id === keyboardInstrumentMode) ?? KEYBOARD_INSTRUMENT_MODES[0];
+                    return (
+                      <button
+                        key={`${rowIndex}-${colIndex}`}
+                        onMouseDown={() => handleKeyboardKeyPress(note)}
+                        className={cn(
+                          "aspect-square border rounded-lg flex flex-col items-center justify-center text-xs font-mono transition-all",
+                          isPressed 
+                            ? `${instrument.color} text-white border-white/50 shadow-lg shadow-current scale-105` 
+                            : "bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 border-white/20 text-zinc-400 hover:text-white"
+                        )}
+                      >
+                        <span>{KEYBOARD_NOTE_LABELS[keyIndex]}</span>
+                        <span className="text-[8px] opacity-70 mt-1">{physicalKey.toUpperCase()}</span>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-white/10">
+              <div className="text-xs text-zinc-500">
+                {isRecordingKeyboard ? `Recording... Notes: ${recordedNotes.length}` : 'Click Record to start capturing your performance'}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
