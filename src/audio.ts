@@ -25,12 +25,11 @@ export interface SoundDef {
 
 export type AudioStyleId =
   | 'default'
-  | 'orchestral'
   | 'club'
+  | 'techno'
+  | 'synthwave'
   | 'trap'
   | 'chiptune'
-  | 'ambient'
-  | 'industrial'
   | 'experimental';
 
 export interface AudioStyle {
@@ -41,12 +40,11 @@ export interface AudioStyle {
 
 export const AUDIO_STYLES: AudioStyle[] = [
   { id: 'default', name: 'Clean', accent: 'bg-slate-400' },
-  { id: 'orchestral', name: 'Orchestral', accent: 'bg-yellow-500' },
   { id: 'club', name: 'Club', accent: 'bg-emerald-500' },
+  { id: 'techno', name: 'Techno', accent: 'bg-cyan-500' },
+  { id: 'synthwave', name: 'Synthwave', accent: 'bg-pink-500' },
   { id: 'trap', name: 'Trap 808', accent: 'bg-violet-500' },
   { id: 'chiptune', name: 'Chiptune', accent: 'bg-cyan-500' },
-  { id: 'ambient', name: 'Ambient', accent: 'bg-sky-500' },
-  { id: 'industrial', name: 'Industrial', accent: 'bg-red-500' },
   { id: 'experimental', name: 'Experimental', accent: 'bg-fuchsia-500' },
 ];
 
@@ -456,41 +454,72 @@ export class ProjectEngine {
     const shift = this.channels[channelIndex].pitchShift;
     const rateMultiplier = Math.pow(2, shift / 12);
 
-    if (styleId === 'orchestral' || styleId === 'ambient') {
-      const noise = ctx.createBufferSource();
-      noise.buffer = this.makeNoise(styleId === 'ambient' ? 0.8 : 0.28);
-      const { filter } = this.connectFiltered(noise, time, channelIndex, styleId === 'ambient' ? 0.09 : 0.18, styleId === 'ambient' ? 0.8 : 0.28, 'bandpass', type === 'laser' ? 1800 : 620, 4);
-      filter.frequency.exponentialRampToValueAtTime(styleId === 'ambient' ? 260 : 1100, time + (styleId === 'ambient' ? 0.75 : 0.18));
-      noise.start(time);
-      return;
-    }
-
     if (styleId === 'chiptune') {
       const osc = ctx.createOscillator();
       osc.type = 'square';
-      osc.frequency.setValueAtTime((type === 'laser' ? 1320 : 330) * rateMultiplier, time);
-      osc.frequency.setValueAtTime((type === 'glitch' ? 1760 : 220) * rateMultiplier, time + 0.045);
-      this.connectFiltered(osc, time, channelIndex, 0.22, 0.12, 'lowpass', 4200, 1);
+      osc.frequency.setValueAtTime((type === 'laser' ? 1760 : 660) * rateMultiplier, time);
+      osc.frequency.setValueAtTime((type === 'glitch' ? 2349 : 880) * rateMultiplier, time + 0.035);
+      this.connectFiltered(osc, time, channelIndex, 0.18, 0.08, 'highpass', 1300, 1.2);
       osc.start(time);
-      osc.stop(time + 0.12);
+      osc.stop(time + 0.08);
       return;
     }
 
-    if (styleId === 'industrial' || styleId === 'experimental') {
+    if (styleId === 'techno') {
       const carrier = ctx.createOscillator();
       const mod = ctx.createOscillator();
       const modGain = ctx.createGain();
-      carrier.type = styleId === 'industrial' ? 'sawtooth' : 'square';
-      carrier.frequency.setValueAtTime((type === 'train' ? 90 : 240 + Math.random() * 640) * rateMultiplier, time);
-      mod.type = 'square';
-      mod.frequency.setValueAtTime(styleId === 'industrial' ? 47 : 31, time);
-      modGain.gain.setValueAtTime(styleId === 'industrial' ? 520 : 280, time);
+      carrier.type = 'square';
+      carrier.frequency.setValueAtTime((type === 'train' ? 140 : 520) * rateMultiplier, time);
+      mod.type = 'sawtooth';
+      mod.frequency.setValueAtTime(24, time);
+      modGain.gain.setValueAtTime(type === 'glitch' ? 420 : 240, time);
       mod.connect(modGain);
       modGain.connect(carrier.frequency);
-      this.connectFiltered(carrier, time, channelIndex, styleId === 'industrial' ? 0.32 : 0.26, styleId === 'industrial' ? 0.22 : 0.14, 'bandpass', styleId === 'industrial' ? 760 : 2400, 9);
+      this.connectFiltered(carrier, time, channelIndex, 0.26, 0.16, 'bandpass', 1500, 7);
       carrier.start(time);
       mod.start(time);
+      carrier.stop(time + 0.16);
+      mod.stop(time + 0.16);
+      return;
+    }
+
+    if (styleId === 'synthwave') {
+      const sweep = ctx.createOscillator();
+      sweep.type = 'sawtooth';
+      sweep.frequency.setValueAtTime((type === 'laser' ? 980 : 420) * rateMultiplier, time);
+      sweep.frequency.exponentialRampToValueAtTime(120 * rateMultiplier, time + 0.32);
+      const { filter } = this.connectFiltered(sweep, time, channelIndex, 0.2, 0.34, 'lowpass', 3600, 2);
+      filter.frequency.exponentialRampToValueAtTime(900, time + 0.3);
+      sweep.start(time);
+      sweep.stop(time + 0.34);
+      return;
+    }
+
+    if (styleId === 'experimental') {
+      const root = type === 'laser' ? 880 : type === 'train' ? 110 : 330;
+      const carrier = ctx.createOscillator();
+      const harmony = ctx.createOscillator();
+      const mod = ctx.createOscillator();
+      const modGain = ctx.createGain();
+      carrier.type = 'square';
+      harmony.type = 'triangle';
+      carrier.frequency.setValueAtTime(root * rateMultiplier, time);
+      harmony.frequency.setValueAtTime(root * 1.5 * rateMultiplier, time);
+      mod.type = 'sine';
+      mod.frequency.setValueAtTime(type === 'glitch' ? 37 : 13, time);
+      modGain.gain.setValueAtTime(140, time);
+      mod.connect(modGain);
+      modGain.connect(carrier.frequency);
+      const mix = ctx.createGain();
+      carrier.connect(mix);
+      harmony.connect(mix);
+      this.connectFiltered(mix, time, channelIndex, 0.2, 0.22, 'bandpass', type === 'train' ? 520 : 2100, 6);
+      carrier.start(time);
+      harmony.start(time);
+      mod.start(time);
       carrier.stop(time + 0.22);
+      harmony.stop(time + 0.22);
       mod.stop(time + 0.22);
       return;
     }
@@ -508,25 +537,6 @@ export class ProjectEngine {
     const ctx = this.ctx;
     const styleId = this.style.id;
 
-    if (styleId === 'orchestral') {
-      if (type === 'kick') {
-        const drum = ctx.createOscillator();
-        drum.type = 'sine';
-        drum.frequency.setValueAtTime(78, time);
-        drum.frequency.exponentialRampToValueAtTime(48, time + 0.42);
-        this.connectFiltered(drum, time, channelIndex, 0.75, 0.65, 'lowpass', 420, 1.3);
-        drum.start(time);
-        drum.stop(time + 0.65);
-      } else {
-        const noise = ctx.createBufferSource();
-        noise.buffer = this.makeNoise(type === 'hihat' ? 0.35 : 0.22);
-        const freq = type === 'hihat' ? 7200 : type === 'snare' ? 1900 : 2600;
-        this.connectFiltered(noise, time, channelIndex, type === 'hihat' ? 0.13 : 0.28, type === 'hihat' ? 0.35 : 0.22, 'bandpass', freq, type === 'hihat' ? 7 : 3);
-        noise.start(time);
-      }
-      return;
-    }
-
     if (styleId === 'trap') {
       if (type === 'kick') {
         const sub = ctx.createOscillator();
@@ -539,8 +549,8 @@ export class ProjectEngine {
         sub.stop(time + 0.85);
       } else {
         const noise = ctx.createBufferSource();
-        noise.buffer = this.makeNoise(type === 'hihat' ? 0.035 : 0.14);
-        this.connectFiltered(noise, time, channelIndex, type === 'hihat' ? 0.22 : 0.42, type === 'hihat' ? 0.035 : 0.14, 'highpass', type === 'hihat' ? 9800 : 2200, 2.2);
+        noise.buffer = this.makeNoise(type === 'hihat' ? 0.028 : 0.14);
+        this.connectFiltered(noise, time, channelIndex, type === 'hihat' ? 0.22 : 0.42, type === 'hihat' ? 0.028 : 0.14, 'highpass', type === 'hihat' ? 10500 : 2200, 2.2);
         noise.start(time);
       }
       return;
@@ -549,38 +559,65 @@ export class ProjectEngine {
     if (styleId === 'chiptune') {
       const osc = ctx.createOscillator();
       osc.type = type === 'kick' ? 'triangle' : 'square';
-      osc.frequency.setValueAtTime(type === 'kick' ? 120 : type === 'snare' ? 260 : 2200, time);
-      osc.frequency.exponentialRampToValueAtTime(type === 'kick' ? 55 : 90, time + 0.08);
-      this.connectFiltered(osc, time, channelIndex, type === 'kick' ? 0.55 : 0.2, type === 'kick' ? 0.18 : 0.07, 'lowpass', type === 'hihat' ? 5000 : 1600, 1);
+      osc.frequency.setValueAtTime(type === 'kick' ? 132 : type === 'snare' ? 520 : 4200, time);
+      osc.frequency.exponentialRampToValueAtTime(type === 'kick' ? 62 : 180, time + 0.055);
+      this.connectFiltered(osc, time, channelIndex, type === 'kick' ? 0.48 : 0.16, type === 'kick' ? 0.14 : 0.045, 'highpass', type === 'kick' ? 90 : 1200, 0.8);
       osc.start(time);
-      osc.stop(time + (type === 'kick' ? 0.18 : 0.07));
+      osc.stop(time + (type === 'kick' ? 0.14 : 0.045));
       return;
     }
 
-    if (styleId === 'ambient') {
-      const noise = ctx.createBufferSource();
-      noise.buffer = this.makeNoise(type === 'kick' ? 0.55 : 0.75);
-      this.connectFiltered(noise, time, channelIndex, type === 'kick' ? 0.22 : 0.1, type === 'kick' ? 0.55 : 0.75, 'lowpass', type === 'kick' ? 180 : 1600, 0.8);
-      noise.start(time);
+    if (styleId === 'techno') {
+      if (type === 'kick') {
+        const kick = ctx.createOscillator();
+        kick.type = 'triangle';
+        kick.frequency.setValueAtTime(165, time);
+        kick.frequency.exponentialRampToValueAtTime(44, time + 0.28);
+        this.connectFiltered(kick, time, channelIndex, 0.95, 0.32, 'lowpass', 620, 1.2);
+        kick.start(time);
+        kick.stop(time + 0.32);
+      } else {
+        const noise = ctx.createBufferSource();
+        noise.buffer = this.makeNoise(type === 'hihat' ? 0.038 : 0.13);
+        this.connectFiltered(noise, time, channelIndex, type === 'hihat' ? 0.25 : 0.44, type === 'hihat' ? 0.038 : 0.13, 'bandpass', type === 'hihat' ? 8500 : 1800, 3.5);
+        noise.start(time);
+      }
       return;
     }
 
-    if (styleId === 'industrial' || styleId === 'experimental') {
+    if (styleId === 'synthwave') {
+      if (type === 'kick') {
+        const kick = ctx.createOscillator();
+        kick.type = 'sine';
+        kick.frequency.setValueAtTime(120, time);
+        kick.frequency.exponentialRampToValueAtTime(48, time + 0.38);
+        this.connectFiltered(kick, time, channelIndex, 0.74, 0.46, 'lowpass', 420, 0.9);
+        kick.start(time);
+        kick.stop(time + 0.46);
+      } else {
+        const noise = ctx.createBufferSource();
+        noise.buffer = this.makeNoise(type === 'hihat' ? 0.08 : 0.2);
+        this.connectFiltered(noise, time, channelIndex, type === 'hihat' ? 0.16 : 0.34, type === 'hihat' ? 0.08 : 0.2, 'highpass', type === 'hihat' ? 6200 : 1500, 1.3);
+        noise.start(time);
+      }
+      return;
+    }
+
+    if (styleId === 'experimental') {
       const hit = ctx.createOscillator();
-      const mod = ctx.createOscillator();
-      const modGain = ctx.createGain();
-      hit.type = styleId === 'industrial' ? 'sawtooth' : 'square';
-      hit.frequency.setValueAtTime(type === 'kick' ? 95 : type === 'hihat' ? 1200 : 320, time);
-      mod.type = 'square';
-      mod.frequency.setValueAtTime(type === 'hihat' ? 90 : 42, time);
-      modGain.gain.setValueAtTime(styleId === 'industrial' ? 360 : 180, time);
-      mod.connect(modGain);
-      modGain.connect(hit.frequency);
-      this.connectFiltered(hit, time, channelIndex, type === 'kick' ? 0.62 : 0.28, type === 'kick' ? 0.32 : 0.12, 'bandpass', type === 'kick' ? 280 : 1500, 8);
+      const bell = ctx.createOscillator();
+      const mix = ctx.createGain();
+      hit.type = type === 'kick' ? 'sine' : 'square';
+      bell.type = 'triangle';
+      hit.frequency.setValueAtTime(type === 'kick' ? 88 : 310, time);
+      bell.frequency.setValueAtTime(type === 'hihat' ? 2400 : 465, time);
+      hit.connect(mix);
+      bell.connect(mix);
+      this.connectFiltered(mix, time, channelIndex, type === 'kick' ? 0.5 : 0.22, type === 'kick' ? 0.36 : 0.16, 'bandpass', type === 'kick' ? 260 : 1700, 5);
       hit.start(time);
-      mod.start(time);
-      hit.stop(time + 0.32);
-      mod.stop(time + 0.32);
+      bell.start(time);
+      hit.stop(time + 0.36);
+      bell.stop(time + 0.16);
       return;
     }
 
@@ -608,30 +645,6 @@ export class ProjectEngine {
     const isBass = category === 'bass';
     const freq = isBass ? baseFreq / 2 : baseFreq;
 
-    if (styleId === 'orchestral') {
-      const voices = isBass ? [0, 7] : [-7, 0, 4, 12];
-      const gain = ctx.createGain();
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(isBass ? 620 : 1800, time);
-      filter.Q.setValueAtTime(0.8, time);
-      filter.connect(gain);
-      gain.connect(this.channels[channelIndex].input);
-      gain.gain.setValueAtTime(0.001, time);
-      gain.gain.linearRampToValueAtTime(isBass ? 0.28 : 0.18, time + 0.08);
-      gain.gain.exponentialRampToValueAtTime(0.001, time + (isBass ? 0.85 : 1.15));
-      voices.forEach((semi, index) => {
-        const voice = ctx.createOscillator();
-        voice.type = index % 2 ? 'sine' : 'triangle';
-        voice.frequency.setValueAtTime(freq * Math.pow(2, semi / 12), time);
-        voice.detune.setValueAtTime((index - 1.5) * 5, time);
-        voice.connect(filter);
-        voice.start(time);
-        voice.stop(time + (isBass ? 0.85 : 1.15));
-      });
-      return;
-    }
-
     if (styleId === 'trap' && isBass) {
       const sub = ctx.createOscillator();
       sub.type = 'sine';
@@ -646,52 +659,75 @@ export class ProjectEngine {
 
     if (styleId === 'chiptune') {
       const osc = ctx.createOscillator();
-      osc.type = isBass ? 'square' : 'square';
-      osc.frequency.setValueAtTime(freq, time);
-      this.connectFiltered(osc, time, channelIndex, isBass ? 0.36 : 0.2, isBass ? 0.18 : 0.12, 'lowpass', isBass ? 900 : 5200, 1);
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(freq * (isBass ? 1 : 2), time);
+      this.connectFiltered(osc, time, channelIndex, isBass ? 0.3 : 0.16, isBass ? 0.14 : 0.09, 'highpass', isBass ? 120 : 900, 0.9);
       osc.start(time);
-      osc.stop(time + (isBass ? 0.18 : 0.12));
+      osc.stop(time + (isBass ? 0.14 : 0.09));
       return;
     }
 
-    if (styleId === 'ambient') {
-      const gain = ctx.createGain();
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(isBass ? 420 : 900, time);
-      filter.connect(gain);
-      gain.connect(this.channels[channelIndex].input);
-      gain.gain.setValueAtTime(0.001, time);
-      gain.gain.linearRampToValueAtTime(isBass ? 0.18 : 0.11, time + 0.24);
-      gain.gain.exponentialRampToValueAtTime(0.001, time + 1.8);
-      [0, 7, 12].forEach((semi, index) => {
-        const pad = ctx.createOscillator();
-        pad.type = 'sine';
-        pad.frequency.setValueAtTime(freq * Math.pow(2, semi / 12), time);
-        pad.detune.setValueAtTime([-9, 6, 14][index], time);
-        pad.connect(filter);
-        pad.start(time);
-        pad.stop(time + 1.8);
-      });
-      return;
-    }
-
-    if (styleId === 'industrial' || styleId === 'experimental') {
+    if (styleId === 'techno') {
+      const fm = ctx.createOscillator();
       const carrier = ctx.createOscillator();
+      const fmGain = ctx.createGain();
+      carrier.type = isBass ? 'sawtooth' : 'square';
+      carrier.frequency.setValueAtTime(freq, time);
+      fm.type = 'sine';
+      fm.frequency.setValueAtTime(freq * (isBass ? 1.5 : 3.01), time);
+      fmGain.gain.setValueAtTime(isBass ? 120 : 180, time);
+      fm.connect(fmGain);
+      fmGain.connect(carrier.frequency);
+      this.connectFiltered(carrier, time, channelIndex, isBass ? 0.42 : 0.24, isBass ? 0.22 : 0.16, 'bandpass', isBass ? 700 : 1700, 6);
+      fm.start(time);
+      carrier.start(time);
+      fm.stop(time + (isBass ? 0.22 : 0.16));
+      carrier.stop(time + (isBass ? 0.22 : 0.16));
+      return;
+    }
+
+    if (styleId === 'synthwave') {
+      const main = ctx.createOscillator();
+      const detuned = ctx.createOscillator();
+      const octave = ctx.createOscillator();
+      const mix = ctx.createGain();
+      [main, detuned, octave].forEach((source, index) => {
+        source.type = 'sawtooth';
+        source.frequency.setValueAtTime(freq * (index === 2 && !isBass ? 2 : 1), time);
+        source.detune.setValueAtTime([-14, 14, 3][index], time);
+        source.connect(mix);
+        source.start(time);
+        source.stop(time + (isBass ? 0.42 : 0.9));
+      });
+      const { filter } = this.connectFiltered(mix, time, channelIndex, isBass ? 0.42 : 0.2, isBass ? 0.42 : 0.9, 'lowpass', isBass ? 760 : 3400, 1.1);
+      filter.frequency.exponentialRampToValueAtTime(isBass ? 360 : 1400, time + (isBass ? 0.36 : 0.82));
+      return;
+    }
+
+    if (styleId === 'experimental') {
+      const carrier = ctx.createOscillator();
+      const harmony = ctx.createOscillator();
       const mod = ctx.createOscillator();
       const modGain = ctx.createGain();
-      carrier.type = styleId === 'industrial' ? 'sawtooth' : 'square';
+      const mix = ctx.createGain();
+      carrier.type = 'square';
+      harmony.type = 'triangle';
       carrier.frequency.setValueAtTime(freq, time);
+      harmony.frequency.setValueAtTime(freq * (isBass ? 0.75 : 1.5), time);
       mod.type = 'sine';
-      mod.frequency.setValueAtTime(freq * (isBass ? 1.5 : 2.7), time);
-      modGain.gain.setValueAtTime(styleId === 'industrial' ? 220 : 320, time);
+      mod.frequency.setValueAtTime(isBass ? 11 : 19, time);
+      modGain.gain.setValueAtTime(isBass ? 90 : 150, time);
       mod.connect(modGain);
       modGain.connect(carrier.frequency);
-      this.connectFiltered(carrier, time, channelIndex, isBass ? 0.4 : 0.22, styleId === 'industrial' ? 0.24 : 0.13, 'bandpass', isBass ? 560 : 2400, 7);
+      carrier.connect(mix);
+      harmony.connect(mix);
+      this.connectFiltered(mix, time, channelIndex, isBass ? 0.34 : 0.18, isBass ? 0.34 : 0.28, 'bandpass', isBass ? 520 : 1800, 4.5);
       carrier.start(time);
+      harmony.start(time);
       mod.start(time);
-      carrier.stop(time + (styleId === 'industrial' ? 0.24 : 0.13));
-      mod.stop(time + (styleId === 'industrial' ? 0.24 : 0.13));
+      carrier.stop(time + (isBass ? 0.34 : 0.28));
+      harmony.stop(time + (isBass ? 0.34 : 0.28));
+      mod.stop(time + (isBass ? 0.34 : 0.28));
       return;
     }
 
