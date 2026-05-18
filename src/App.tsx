@@ -55,6 +55,7 @@ export default function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
 
   // Keyboard states
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
@@ -218,6 +219,229 @@ export default function App() {
   const handleStyleChange = (styleId: AudioStyleId) => {
     setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, styleId } : t));
     engineManager.getProject(activeTab.id).setStyle(styleId);
+  };
+
+  interface SerializableSoundDef extends Omit<SoundDef, 'buffer'> {
+    bufferBase64?: string;
+    sampleRate?: number;
+    numberOfChannels?: number;
+  }
+
+  interface SerializedTabData {
+    id: string;
+    name: string;
+    slots: (SerializableSoundDef | null)[];
+    mutedSlots: boolean[];
+    fxSlots: FxParams[];
+    masterFx: FxParams;
+    styleId: AudioStyleId;
+    activeStep: number;
+    isPlaying: boolean;
+  }
+
+  interface MusicArrFile {
+    version: '1.0';
+    tabs: SerializedTabData[];
+    recordedSounds: SerializableSoundDef[];
+    userSettings: {
+      activeTabId: string;
+      keyboardInstrumentMode: string;
+      isKeyboardVisible?: boolean;
+    };
+  }
+
+  const encodeAudioBufferToWavBase64 = (buffer: AudioBuffer): string => {
+    const numChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const format = 1;
+    const bitsPerSample = 16;
+    const blockAlign = numChannels * bitsPerSample / 8;
+    const byteLength = 44 + buffer.length * blockAlign;
+    const wav = new ArrayBuffer(byteLength);
+    const view = new DataView(wav);
+
+    const writeString = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + buffer.length * blockAlign, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, format, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeString(36, 'data');
+    view.setUint32(40, buffer.length * blockAlign, true);
+
+    const offset = 44;
+    for (let channel = 0; channel < numChannels; channel++) {
+      const channelData = buffer.getChannelData(channel);
+      let idx = offset + channel * 2;
+      for (let i = 0; i < buffer.length; i++) {
+        const sample = Math.max(-1, Math.min(1, channelData[i]));
+        view.setInt16(idx, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        idx += blockAlign;
+      }
+    }
+
+    const bytes = new Uint8Array(wav);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+
+    return btoa(binary);
+  };
+
+  const decodeBase64ToAudioBuffer = async (base64: string): Promise<AudioBuffer> => {
+    engineManager.init();
+    if (!engineManager.ctx) throw new Error('Unable to initialize audio context for import');
+
+    const binaryString = atob(base64);
+    const buffer = new ArrayBuffer(binaryString.length);
+    const view = new Uint8Array(buffer);
+    for (let i = 0; i < binaryString.length; i++) {
+      view[i] = binaryString.charCodeAt(i);
+    }
+    return await engineManager.ctx.decodeAudioData(buffer);
+  };
+
+  const serializeSoundDef = async (sound: SoundDef): Promise<SerializableSoundDef> => {
+    const serialized: SerializableSoundDef = {
+      id: sound.id,
+      name: sound.name,
+      category: sound.category,
+      color: sound.color,
+      pattern: sound.pattern,
+      loopMode: sound.loopMode,
+      playMode: sound.playMode,
+    };
+
+    if (sound.buffer) {
+      serialized.bufferBase64 = encodeAudioBufferToWavBase64(sound.buffer);
+      serialized.sampleRate = sound.buffer.sampleRate;
+      serialized.numberOfChannels = sound.buffer.numberOfChannels;
+    }
+
+    return serialized;
+  };
+
+  const deserializeSoundDef = async (raw: SerializableSoundDef): Promise<SoundDef> => {
+    const builtIn = AVAILABLE_SOUNDS.find((item) => item.id === raw.id && !raw.bufferBase64);
+    if (builtIn) {
+      return builtIn;
+    }
+
+    const result: SoundDef = {
+      id: raw.id,
+      name: raw.name,
+      category: raw.category,
+      color: raw.color,
+      pattern: raw.pattern,
+      loopMode: raw.loopMode,
+      playMode: raw.playMode,
+    };
+
+    if (raw.bufferBase64) {
+      result.buffer = await decodeBase64ToAudioBuffer(raw.bufferBase64);
+    }
+
+    return result;
+  };
+
+  const createMusicarrPayload = async (): Promise<MusicArrFile> => {
+    const tabsPayload = await Promise.all(tabs.map(async (tab) => ({
+      id: tab.id,
+      name: tab.name,
+      slots: await Promise.all(tab.slots.map((slot) => slot ? serializeSoundDef(slot) : null)),
+      mutedSlots: tab.mutedSlots,
+      fxSlots: tab.fxSlots,
+      masterFx: tab.masterFx,
+      styleId: tab.styleId,
+      activeStep: tab.activeStep,
+      isPlaying: tab.isPlaying,
+    })));
+
+    const recordedPayload = await Promise.all(recordedSounds.map(serializeSoundDef));
+
+    return {
+      version: '1.0',
+      tabs: tabsPayload,
+      recordedSounds: recordedPayload,
+      userSettings: {
+        activeTabId,
+        keyboardInstrumentMode,
+        isKeyboardVisible,
+      },
+    };
+  };
+
+  const handleExportArrangement = async () => {
+    try {
+      const payload = await createMusicarrPayload();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `arrangement-${Date.now()}.musicarr`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export failed', err);
+      alert('导出失败，请重试。');
+    }
+  };
+
+  const handleImportArrangement = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.endsWith('.musicarr')) {
+      alert('请选择 .musicarr 文件进行导入。');
+      event.target.value = '';
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as MusicArrFile;
+      if (!data || !Array.isArray(data.tabs)) {
+        throw new Error('无效的文件格式');
+      }
+
+      engineManager.init();
+      const importedRecordedSounds = await Promise.all((data.recordedSounds || []).map(deserializeSoundDef));
+      const importedTabs = await Promise.all(data.tabs.map(async (tab) => ({
+        ...tab,
+        slots: await Promise.all(tab.slots.map((slot) => slot ? deserializeSoundDef(slot) : null)),
+      })));
+
+      setRecordedSounds(importedRecordedSounds);
+      setTabs(importedTabs);
+      setActiveTabId(data.userSettings?.activeTabId || importedTabs[0]?.id || 'tab-1');
+      setKeyboardInstrumentMode(data.userSettings?.keyboardInstrumentMode || KEYBOARD_INSTRUMENT_MODES[0].id);
+      setIsKeyboardVisible(Boolean(data.userSettings?.isKeyboardVisible));
+
+      importedTabs.forEach((tab) => {
+        const engine = engineManager.getProject(tab.id);
+        engine.setStyle(tab.styleId);
+        engine.setSlots(tab.slots);
+        engine.setMutedSlots(tab.mutedSlots);
+        tab.fxSlots.forEach((fx, index) => engine.setFxParams(index, fx));
+        engine.setMasterFxParams(tab.masterFx);
+      });
+    } catch (err) {
+      console.error('Import failed', err);
+      alert('导入失败，请检查文件格式。');
+    }
+
+    event.target.value = '';
   };
 
   const toggleMute = (index: number) => {
@@ -595,6 +819,25 @@ export default function App() {
              New
           </button>
 
+          <button
+             onClick={handleExportArrangement}
+             className="px-3 py-2 rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white text-[9px] font-bold uppercase tracking-widest transition-all"
+          >
+             Export
+          </button>
+          <button
+             onClick={() => importFileInputRef.current?.click()}
+             className="px-3 py-2 rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white text-[9px] font-bold uppercase tracking-widest transition-all"
+          >
+             Import
+          </button>
+          <input
+            type="file"
+            accept=".musicarr,application/json"
+            className="hidden"
+            ref={importFileInputRef}
+            onChange={handleImportArrangement}
+          />
           <button
              onClick={() => setIsKeyboardVisible(true)}
              aria-label="Open keyboard"
