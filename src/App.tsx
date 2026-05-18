@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Square, UserCircle2, X, Mic, MicOff, Upload, Plus, Save, RotateCcw, Shuffle, Keyboard, Circle, Wand2, Sun, Moon } from 'lucide-react';
+import { Play, Square, UserCircle2, X, Mic, MicOff, Upload, Plus, Save, RotateCcw, Shuffle, Keyboard, Circle, Wand2, Sun, Moon, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AUDIO_STYLES, AVAILABLE_SOUNDS, AudioStyleId, SoundDef, engineManager, FxParams, defaultFx, KEYBOARD_NOTES } from './audio';
 import { cn } from './lib/utils';
@@ -390,6 +390,10 @@ export default function App() {
   const beatEnergy = activeTab.isPlaying ? activeStyle.energy[activeTab.activeStep] ?? 0.5 : 0;
   const downbeat = activeTab.activeStep % 4 === 0;
   const sweepPosition = `${(activeTab.activeStep / 15) * 100}%`;
+  const rhythmWave = activeStyle.energy.map((energy, index) => {
+    const accent = index % 4 === 0 ? 0.22 : index % 2 === 0 ? 0.1 : -0.04;
+    return Math.max(0.08, Math.min(1, energy + accent));
+  });
 
   const [hoveredFxSlot, setHoveredFxSlot] = useState<number | null>(null);
   const fxTimeoutRef = useRef<NodeJS.Timeout>();
@@ -400,6 +404,8 @@ export default function App() {
   // Recording & Upload states
   const [isRecording, setIsRecording] = useState(false);
   const [recordedSounds, setRecordedSounds] = useState<SoundDef[]>([]);
+  const [isExtraLibraryOpen, setIsExtraLibraryOpen] = useState(false);
+  const [openExtraCategories, setOpenExtraCategories] = useState<Record<string, boolean>>({});
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -531,6 +537,15 @@ export default function App() {
       const pool = AVAILABLE_SOUNDS.filter(sound => sound.category === category);
       return pool[Math.floor(Math.random() * pool.length)] ?? null;
     };
+    const pickRareTexture = () => {
+      const openExtraPools = extraCategories
+        .filter(category => openExtraCategories[category.id])
+        .flatMap(category => AVAILABLE_SOUNDS.filter(sound => sound.category === category.id));
+      if (isExtraLibraryOpen && openExtraPools.length > 0 && Math.random() < 0.08) {
+        return openExtraPools[Math.floor(Math.random() * openExtraPools.length)] ?? null;
+      }
+      return pick('experimental');
+    };
     const nextSlots = [
       pick('beat'),
       pick('effect'),
@@ -538,7 +553,7 @@ export default function App() {
       pick('melody'),
       pick('theme'),
       pick('effect'),
-      pick('experimental'),
+      pickRareTexture(),
     ];
     const nextFx = activeStyle.fxSlots.map((fx) => makeFx({
       ...fx,
@@ -552,6 +567,22 @@ export default function App() {
       slots: nextSlots,
       fxSlots: nextFx,
       masterFx: activeStyle.masterFx,
+    };
+    setTabs(prev => prev.map(t => t.id === activeTab.id ? nextTab : t));
+    syncProjectEngine(nextTab);
+  };
+
+  const reverseActiveTab = () => {
+    const reversedSlots = activeTab.slots.map(slot => {
+      if (!slot) return null;
+      return {
+        ...slot,
+        pattern: [...slot.pattern].reverse(),
+      };
+    });
+    const nextTab = {
+      ...activeTab,
+      slots: reversedSlots,
     };
     setTabs(prev => prev.map(t => t.id === activeTab.id ? nextTab : t));
     syncProjectEngine(nextTab);
@@ -576,6 +607,27 @@ export default function App() {
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(newId);
     syncProjectEngine(newTab);
+  };
+
+  const deleteTab = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    engineManager.getProject(id).stop();
+
+    if (tabs.length === 1) {
+      const fresh = createCodexSongTab();
+      setTabs([fresh]);
+      setActiveTabId(fresh.id);
+      syncProjectEngine(fresh);
+      return;
+    }
+
+    const tabIndex = tabs.findIndex(tab => tab.id === id);
+    const nextTabs = tabs.filter(tab => tab.id !== id);
+    const fallbackTab = nextTabs[Math.max(0, Math.min(tabIndex, nextTabs.length - 1))];
+    setTabs(nextTabs);
+    if (activeTabId === id && fallbackTab) {
+      setActiveTabId(fallbackTab.id);
+    }
   };
 
   const togglePlayTab = (e: React.MouseEvent, id: string) => {
@@ -948,6 +1000,20 @@ export default function App() {
     engineManager.getProject(activeTab.id).setSlots(newSlots);
   };
 
+  const handleClearActiveTab = () => {
+    const emptySlots = new Array(7).fill(null);
+    const mutedSlots = new Array(7).fill(false);
+    const fxSlots = new Array(7).fill(null).map(defaultFx);
+    const nextTab = {
+      ...activeTab,
+      slots: emptySlots,
+      mutedSlots,
+      fxSlots,
+    };
+    setTabs(prev => prev.map(t => t.id === activeTab.id ? nextTab : t));
+    syncProjectEngine(nextTab);
+  };
+
   const toggleLoopMode = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     setRecordedSounds(prev => prev.map(s => {
@@ -1206,8 +1272,11 @@ export default function App() {
     { id: 'bass', name: 'Basses' },
     { id: 'experimental', name: 'Experimental' },
     { id: 'theme', name: '旋律组' },
-    { id: 'custom', name: 'Custom / Recorded' },
   ];
+  const extraCategories = [
+    { id: 'animal', name: 'Animal Samples' },
+  ];
+  const customCategory = { id: 'custom', name: 'Custom / Recorded' };
 
   const fxConfig: { key: keyof FxParams; name: string; min: number; max: number }[] = [
     { key: 'lpf', name: 'DJ Lowpass', min: 0, max: 100 },
@@ -1239,6 +1308,60 @@ export default function App() {
     : "bg-white/5 hover:bg-white/10 text-zinc-300 border-white/5";
   const mutedTextClass = isDayMode ? "text-slate-500" : "text-zinc-500";
   const hairlineClass = isDayMode ? "bg-slate-200" : "bg-zinc-800";
+
+  const renderLibraryCategory = (cat: { id: string; name: string }) => {
+    const staticItems = AVAILABLE_SOUNDS.filter(s => s.category === cat.id);
+    const customItems = cat.id === 'custom' ? recordedSounds : [];
+    const items = [...staticItems, ...customItems];
+
+    if (items.length === 0 && cat.id !== 'custom') return null;
+
+    return (
+      <div key={cat.id} className="flex flex-col gap-1.5">
+        <h3 className={cn("text-[9px] font-bold uppercase tracking-widest pl-1", mutedTextClass)}>{cat.name}</h3>
+        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+          {items.length === 0 && cat.id === 'custom' && (
+             <div className={cn("text-[9px] italic pl-1 py-2", isDayMode ? "text-slate-400" : "text-zinc-700")}>No recordings yet. Hit 'Rec New' upward!</div>
+          )}
+          {items.map((item) => (
+            <div
+              key={item.id}
+              draggable
+              onDragStart={(e) => handleDragStart(e, item)}
+              className={cn(
+                "flex-none w-32 rounded-lg border p-3 flex flex-col justify-between cursor-grab active:cursor-grabbing group transition-colors relative origin-center",
+                isDayMode ? "bg-white border-slate-900/10 hover:bg-slate-50 shadow-sm" : "bg-zinc-800/80 border-white/5 hover:bg-zinc-700"
+              )}
+              title={item.name}
+            >
+               {cat.id === 'custom' && (
+                 <button
+                   onClick={(e) => toggleLoopMode(e, item.id)}
+                   className="absolute -top-1 -right-1 px-1.5 py-0.5 bg-zinc-600 hover:bg-zinc-500 rounded text-[7px] font-bold text-white shadow-md z-10 uppercase transition-colors"
+                 >
+                   {item.loopMode === 'fast' ? 'FAST' : 'FULL'}
+                 </button>
+               )}
+               <div className="flex justify-between items-start mb-2">
+                  <span className={cn("text-[9px] font-bold uppercase truncate", isDayMode ? "text-slate-800" : "text-white")}>{item.name}</span>
+                  <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", item.color)}></div>
+               </div>
+               <div className="space-y-1.5 mt-auto">
+                 <div className="h-4 w-full flex items-end gap-0.5">
+                    {[1,3,2,5,4,6].map((h, i) => (
+                      <div key={i} className={cn("w-1 flex-1 rounded-t-sm opacity-40 group-hover:opacity-60", item.color)} style={{ height: `${h * 15}%`}}></div>
+                    ))}
+                 </div>
+                 <div className={cn("text-[8px] uppercase tracking-tighter truncate", isDayMode ? "text-slate-400" : "text-zinc-600")}>
+                  {cat.id === 'custom' ? 'RECORDED' : cat.id === 'beat' ? 'LOOP / 120' : cat.id === 'animal' ? 'EXTRA / RARE' : 'SYNTH'}
+                 </div>
+               </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -1291,6 +1414,17 @@ export default function App() {
                      </>
                   )}
                 </span>
+                <button
+                  onClick={(e) => deleteTab(e, tab.id)}
+                  aria-label={`Delete ${tab.name}`}
+                  title="Delete page"
+                  className={cn(
+                    "ml-1 h-5 w-5 rounded-full flex items-center justify-center transition-colors opacity-60 group-hover:opacity-100",
+                    isDayMode ? "text-slate-400 hover:bg-slate-900/10 hover:text-slate-900" : "text-zinc-500 hover:bg-white/10 hover:text-white"
+                  )}
+                >
+                  <X className="w-3 h-3" strokeWidth={3} />
+                </button>
              </div>
           ))}
 
@@ -1327,12 +1461,24 @@ export default function App() {
           <button
              onClick={() => setIsKeyboardVisible(true)}
              aria-label="Open keyboard"
+             title="Open keyboard"
              className={cn(
                "w-10 h-10 rounded-full flex items-center justify-center transition-all border border-white/10 shadow-sm",
                isKeyboardVisible ? "bg-emerald-500 text-white" : isDayMode ? "bg-slate-900/5 text-slate-600 hover:bg-white hover:text-slate-950 border-slate-900/10" : "bg-black/20 text-zinc-400 hover:bg-white/10 hover:text-white"
              )}
           >
              <Keyboard className="w-5 h-5" />
+          </button>
+          <button
+             onClick={handleClearActiveTab}
+             aria-label="Clear current tab"
+             title="Clear current tab"
+             className={cn(
+               "w-10 h-10 rounded-full flex items-center justify-center transition-all border shadow-sm",
+               isDayMode ? "bg-slate-900/5 text-slate-600 hover:bg-white hover:text-slate-950 border-slate-900/10" : "bg-black/20 text-zinc-400 hover:bg-white/10 hover:text-white border-white/10"
+             )}
+          >
+             <Trash2 className="w-5 h-5" />
           </button>
         </div>
 
@@ -1358,6 +1504,14 @@ export default function App() {
           >
             <Shuffle size={11} />
             Shuffle
+          </button>
+          <button
+            onClick={reverseActiveTab}
+            className={cn("flex items-center gap-1.5 px-2 py-1.5 rounded border transition-colors", softButtonClass)}
+            title="Reverse the current page sequence"
+          >
+            <RotateCcw size={11} />
+            Reverse
           </button>
           <button
             onClick={() => persistWorkbench()}
@@ -1462,18 +1616,21 @@ export default function App() {
                 opacity: activeTab.isPlaying ? 0.16 + beatEnergy * 0.34 : 0,
               }}
             />
-            <div className="absolute bottom-4 left-10 right-10 flex items-end gap-1 opacity-70">
-              {activeStyle.energy.map((energy, index) => {
+            <div className="absolute bottom-4 left-8 right-8 h-16 flex items-end gap-1 opacity-80">
+              {rhythmWave.map((energy, index) => {
                 const isCurrent = activeTab.isPlaying && index === activeTab.activeStep;
+                const isDownbeat = index % 4 === 0;
+                const pulseLift = isCurrent ? 12 + beatEnergy * 18 : 0;
                 return (
                   <div
                     key={index}
-                    className="relative flex-1 rounded-full transition-all duration-100"
+                    className="relative flex-1 rounded-full transition-all duration-150"
                     style={{
-                      height: `${4 + energy * 14}px`,
-                      background: activeStyle.accent,
-                      opacity: isCurrent ? 0.58 : 0.08 + energy * 0.12,
-                      transform: isCurrent ? `scaleY(${1.04 + beatEnergy * 0.22})` : undefined,
+                      height: `${6 + energy * (isDownbeat ? 34 : 26) + pulseLift}px`,
+                      background: `linear-gradient(180deg, ${activeStyle.accent}, rgba(255,255,255,0.12))`,
+                      opacity: isCurrent ? 0.72 : 0.08 + energy * 0.22,
+                      boxShadow: isCurrent ? `0 0 ${10 + beatEnergy * 20}px ${activeStyle.glow}` : undefined,
+                      transform: isCurrent ? `scaleY(${1.06 + beatEnergy * 0.18}) translateY(-${2 + beatEnergy * 5}px)` : undefined,
                     }}
                   />
                 );
@@ -1508,17 +1665,20 @@ export default function App() {
             {activeStyle.energy.map((energy, index) => {
               const isCurrent = activeTab.isPlaying && index === activeTab.activeStep;
               const isBeat = index % 4 === 0;
+              const stepHeight = 6 + energy * (isBeat ? 10 : 7);
               return (
                 <div
                   key={index}
                   className={cn(
-                    "h-2 rounded-full transition-all duration-100",
+                    "rounded-full transition-all duration-150 self-end",
                     isBeat ? isDayMode ? "bg-slate-900/15" : "bg-white/15" : isDayMode ? "bg-slate-900/8" : "bg-white/8"
                   )}
                   style={{
+                    height: `${isCurrent ? stepHeight + 6 : stepHeight}px`,
                     backgroundColor: isCurrent ? activeStyle.accent : undefined,
                     opacity: isCurrent ? 1 : 0.25 + energy * 0.45,
-                    transform: isCurrent ? 'scaleY(1.5)' : undefined,
+                    transform: isCurrent ? `translateY(-${2 + beatEnergy * 4}px)` : undefined,
+                    boxShadow: isCurrent ? `0 0 ${8 + beatEnergy * 14}px ${activeStyle.glow}` : undefined,
                   }}
                 />
               );
@@ -1764,57 +1924,42 @@ export default function App() {
           </div>
           
           <div className="flex-1 flex flex-col gap-3 overflow-y-auto pr-2 scrollbar-none pb-4">
-            {categories.map((cat) => {
-              const staticItems = AVAILABLE_SOUNDS.filter(s => s.category === cat.id);
-              const customItems = cat.id === 'custom' ? recordedSounds : [];
-              const items = [...staticItems, ...customItems];
-              
-              if (items.length === 0 && cat.id !== 'custom') return null;
-              
-              return (
-                <div key={cat.id} className="flex flex-col gap-1.5">
-                  <h3 className={cn("text-[9px] font-bold uppercase tracking-widest pl-1", mutedTextClass)}>{cat.name}</h3>
-                  <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-                    {items.length === 0 && cat.id === 'custom' && (
-                       <div className={cn("text-[9px] italic pl-1 py-2", isDayMode ? "text-slate-400" : "text-zinc-700")}>No recordings yet. Hit 'Rec New' upward!</div>
+            {categories.map(renderLibraryCategory)}
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => setIsExtraLibraryOpen(prev => !prev)}
+                className={cn(
+                  "h-9 flex items-center justify-between rounded-lg border px-3 text-[9px] font-bold uppercase tracking-[0.18em] transition-colors",
+                  isDayMode ? "border-slate-900/10 bg-slate-900/5 text-slate-500 hover:bg-slate-900/10 hover:text-slate-800" : "border-white/5 bg-white/5 text-zinc-500 hover:bg-white/10 hover:text-zinc-300"
+                )}
+                aria-expanded={isExtraLibraryOpen}
+              >
+                <span>Extra Library</span>
+                <span className={cn("flex items-center gap-2", isExtraLibraryOpen ? isDayMode ? "text-slate-800" : "text-zinc-200" : "")}>
+                  Rare Shuffle 8%
+                  {isExtraLibraryOpen ? <X size={12} /> : <Plus size={12} />}
+                </span>
+              </button>
+              {isExtraLibraryOpen && extraCategories.map((cat) => (
+                <div key={cat.id} className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOpenExtraCategories(prev => ({ ...prev, [cat.id]: !prev[cat.id] }))}
+                    className={cn(
+                      "h-8 flex items-center justify-between rounded-lg border px-3 text-[9px] font-bold uppercase tracking-[0.16em] transition-colors",
+                      isDayMode ? "border-slate-900/10 bg-white/70 text-slate-500 hover:bg-white hover:text-slate-800" : "border-white/5 bg-zinc-900/80 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
                     )}
-                    {items.map((item) => (
-                      <div
-                        key={item.id}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, item)}
-                        className={cn(
-                          "flex-none w-32 rounded-lg border p-3 flex flex-col justify-between cursor-grab active:cursor-grabbing group transition-colors relative origin-center",
-                          isDayMode ? "bg-white border-slate-900/10 hover:bg-slate-50 shadow-sm" : "bg-zinc-800/80 border-white/5 hover:bg-zinc-700"
-                        )}
-                        title={item.name}
-                      >
-                         {cat.id === 'custom' && (
-                           <button 
-                             onClick={(e) => toggleLoopMode(e, item.id)}
-                             className="absolute -top-1 -right-1 px-1.5 py-0.5 bg-zinc-600 hover:bg-zinc-500 rounded text-[7px] font-bold text-white shadow-md z-10 uppercase transition-colors"
-                           >
-                             {item.loopMode === 'fast' ? 'FAST' : 'FULL'}
-                           </button>
-                         )}
-                         <div className="flex justify-between items-start mb-2">
-                            <span className={cn("text-[9px] font-bold uppercase truncate", isDayMode ? "text-slate-800" : "text-white")}>{item.name}</span>
-                            <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", item.color)}></div>
-                         </div>
-                         <div className="space-y-1.5 mt-auto">
-                           <div className="h-4 w-full flex items-end gap-0.5">
-                              {[1,3,2,5,4,6].map((h, i) => (
-                                <div key={i} className={cn("w-1 flex-1 rounded-t-sm opacity-40 group-hover:opacity-60", item.color)} style={{ height: `${h * 15}%`}}></div>
-                              ))}
-                           </div>
-                           <div className={cn("text-[8px] uppercase tracking-tighter truncate", isDayMode ? "text-slate-400" : "text-zinc-600")}>{cat.id === 'custom' ? 'RECORDED' : cat.id === 'beat' ? 'LOOP / 120' : 'SYNTH'}</div>
-                         </div>
-                      </div>
-                    ))}
-                  </div>
+                    aria-expanded={Boolean(openExtraCategories[cat.id])}
+                  >
+                    <span>{cat.name}</span>
+                    {openExtraCategories[cat.id] ? <X size={11} /> : <Plus size={11} />}
+                  </button>
+                  {openExtraCategories[cat.id] && renderLibraryCategory(cat)}
                 </div>
-              )
-            })}
+              ))}
+            </div>
+            {renderLibraryCategory(customCategory)}
           </div>
         </section>
         

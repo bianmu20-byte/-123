@@ -1,4 +1,4 @@
-export type Category = 'beat' | 'effect' | 'bass' | 'melody' | 'experimental' | 'custom' | 'theme';
+export type Category = 'beat' | 'effect' | 'bass' | 'melody' | 'experimental' | 'animal' | 'custom' | 'theme';
 
 export interface FxParams {
   lpf: number; hpf: number; volume: number; sidechain: number;
@@ -19,6 +19,10 @@ export interface SoundDef {
   color: string;
   pattern: { note?: number | number[]; drum?: string; exp?: string }[];
   buffer?: AudioBuffer; // For recorded sounds
+  assetUrl?: string;
+  assetStart?: number;
+  assetDuration?: number;
+  assetRate?: number;
   loopMode?: 'fast' | 'full';
   playMode?: 'pattern' | 'buffer'; // New: 'pattern' for sequenced notes, 'buffer' for direct audio playback
 }
@@ -73,6 +77,8 @@ const parsePattern = (str: string) => {
     return {};
   });
 };
+
+const sampleStep = () => ({ exp: 'sample' });
 
 export const AVAILABLE_SOUNDS: SoundDef[] = [
   // Beats
@@ -155,6 +161,17 @@ export const AVAILABLE_SOUNDS: SoundDef[] = [
   { id: 'x9', name: 'Vinyl Fill', category: 'experimental', color: 'bg-fuchsia-500', pattern: parsePattern('X.....X.....X...') },
   { id: 'x10', name: 'Echo Throw', category: 'experimental', color: 'bg-fuchsia-500', pattern: parsePattern('....Y...Y.......') },
 
+  // Animal Samples
+  { id: 'a-mosquito-1', name: 'Mosquito Pin', category: 'animal', color: 'bg-lime-500', assetUrl: '/samples/animals/mosquito.mp3', assetStart: 0.12, assetDuration: 0.42, assetRate: 1.35, pattern: [sampleStep(), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}] },
+  { id: 'a-mosquito-2', name: 'Mosquito Orbit', category: 'animal', color: 'bg-lime-500', assetUrl: '/samples/animals/mosquito.mp3', assetStart: 1.1, assetDuration: 0.58, assetRate: 1.05, pattern: [{}, {}, sampleStep(), {}, {}, sampleStep(), {}, {}, {}, {}, sampleStep(), {}, {}, {}, {}, {}] },
+  { id: 'a-mosquito-3', name: 'Mosquito Swarm', category: 'animal', color: 'bg-lime-500', assetUrl: '/samples/animals/mosquito.mp3', assetStart: 2.25, assetDuration: 0.48, assetRate: 1.55, pattern: [sampleStep(), {}, sampleStep(), {}, sampleStep(), {}, {}, {}, {}, {}, sampleStep(), {}, sampleStep(), {}, {}, {}] },
+  { id: 'a-goat-1', name: 'Goat Bleat', category: 'animal', color: 'bg-stone-500', assetUrl: '/samples/animals/goat.mp3', assetStart: 0, assetDuration: 0.5, pattern: [{}, {}, {}, sampleStep(), {}, {}, {}, {}, {}, {}, {}, sampleStep(), {}, {}, {}, {}] },
+  { id: 'a-goat-2', name: 'Goat Wobble', category: 'animal', color: 'bg-stone-500', assetUrl: '/samples/animals/goat.mp3', assetStart: 0.14, assetDuration: 0.72, assetRate: 0.76, pattern: [sampleStep(), {}, {}, {}, {}, sampleStep(), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}] },
+  { id: 'a-cat-1', name: 'Cat Meow', category: 'animal', color: 'bg-pink-500', assetUrl: '/samples/animals/cat.mp3', assetStart: 0, assetDuration: 0.52, pattern: [{}, {}, sampleStep(), {}, {}, {}, {}, {}, {}, {}, {}, {}, sampleStep(), {}, {}, {}] },
+  { id: 'a-cat-2', name: 'Cat Chirp', category: 'animal', color: 'bg-pink-500', assetUrl: '/samples/animals/cat.mp3', assetStart: 0.08, assetDuration: 0.34, assetRate: 1.28, pattern: [sampleStep(), {}, {}, {}, {}, {}, {}, sampleStep(), {}, {}, {}, {}, {}, {}, {}, {}] },
+  { id: 'a-dog-1', name: 'Dog Bark', category: 'animal', color: 'bg-amber-500', assetUrl: '/samples/animals/dog.mp3', assetStart: 0, assetDuration: 0.45, pattern: [sampleStep(), {}, {}, {}, {}, {}, {}, {}, {}, {}, sampleStep(), {}, {}, {}, {}, {}] },
+  { id: 'a-dog-2', name: 'Dog Double', category: 'animal', color: 'bg-amber-500', assetUrl: '/samples/animals/dog.mp3', assetStart: 0.08, assetDuration: 0.28, assetRate: 1.15, pattern: [{}, {}, {}, {}, sampleStep(), sampleStep(), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}] },
+
   // Theme (旋律组)
   { id: 't1', name: '前奏', category: 'theme', color: 'bg-yellow-500', pattern: parsePattern('a..c..e..g..a...') },
   { id: 't2', name: '主歌', category: 'theme', color: 'bg-yellow-500', pattern: parsePattern('a.c.e.g.a.c.e.a.') },
@@ -193,6 +210,9 @@ function createReverbBuffer(ctx: AudioContext) {
   }
   return buffer;
 }
+
+const assetBufferCache = new Map<string, AudioBuffer>();
+const assetBufferPromises = new Map<string, Promise<AudioBuffer>>();
 
 export class SlotChannel {
   input: GainNode;
@@ -353,6 +373,11 @@ export class ProjectEngine {
 
   setSlots(newSlots: (SoundDef | null)[]) {
     this.slots = newSlots;
+    newSlots.forEach((slot) => {
+      if (slot?.assetUrl) {
+        this.loadAssetBuffer(slot);
+      }
+    });
   }
 
   setMutedSlots(muted: boolean[]) {
@@ -409,7 +434,12 @@ export class ProjectEngine {
       const stepData = slot.pattern[stepNumber];
       if (!stepData) return;
 
-      if (slot.buffer) {
+      if (slot.assetUrl) {
+        const buffer = this.getAssetBuffer(slot);
+        if (buffer && (stepData.note || stepData.drum || stepData.exp)) {
+          this.playAssetSample(slot, buffer, time, index);
+        }
+      } else if (slot.buffer) {
         this.playBuffer(slot.buffer, time, slot.loopMode || 'fast', index);
       } else if (stepData.drum) {
         this.playDrum(stepData.drum, time, index);
@@ -426,6 +456,42 @@ export class ProjectEngine {
 
     const event = new CustomEvent('step', { detail: { projectId: this.id, step: stepNumber } });
     window.dispatchEvent(event);
+  }
+
+  private getAssetBuffer(slot: SoundDef) {
+    if (!slot.assetUrl) return null;
+    const cached = assetBufferCache.get(slot.assetUrl);
+    if (cached) {
+      slot.buffer = cached;
+      return cached;
+    }
+    this.loadAssetBuffer(slot);
+    return null;
+  }
+
+  private loadAssetBuffer(slot: SoundDef) {
+    if (!slot.assetUrl || assetBufferCache.has(slot.assetUrl)) return;
+    if (!assetBufferPromises.has(slot.assetUrl)) {
+      const promise = fetch(slot.assetUrl)
+        .then(response => {
+          if (!response.ok) throw new Error(`Unable to load ${slot.assetUrl}`);
+          return response.arrayBuffer();
+        })
+        .then(data => this.ctx.decodeAudioData(data))
+        .then(buffer => {
+          assetBufferCache.set(slot.assetUrl!, buffer);
+          return buffer;
+        })
+        .catch(error => {
+          console.warn(error);
+          assetBufferPromises.delete(slot.assetUrl!);
+          throw error;
+        });
+      assetBufferPromises.set(slot.assetUrl, promise);
+    }
+    assetBufferPromises.get(slot.assetUrl)?.then(buffer => {
+      slot.buffer = buffer;
+    }).catch(() => undefined);
   }
 
   private scheduler() {
@@ -463,6 +529,30 @@ export class ProjectEngine {
       gain.gain.linearRampToValueAtTime(0, time + measureDuration);
       source.start(time, 0, measureDuration * rateMultiplier); 
     }
+  }
+
+  private playAssetSample(slot: SoundDef, buffer: AudioBuffer, time: number, channelIndex: number) {
+    const ctx = this.ctx;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+
+    const gain = ctx.createGain();
+    source.connect(gain);
+    gain.connect(this.channels[channelIndex].input);
+
+    const shift = this.channels[channelIndex].pitchShift;
+    const rateMultiplier = Math.pow(2, shift / 12) * (slot.assetRate ?? 1);
+    const start = Math.max(0, Math.min(slot.assetStart ?? 0, Math.max(0, buffer.duration - 0.02)));
+    const availableDuration = Math.max(0.02, buffer.duration - start);
+    const duration = Math.min(slot.assetDuration ?? availableDuration, availableDuration);
+    const playbackDuration = duration / rateMultiplier;
+
+    source.playbackRate.value = rateMultiplier;
+    gain.gain.setValueAtTime(0.001, time);
+    gain.gain.exponentialRampToValueAtTime(0.9, time + 0.012);
+    gain.gain.setValueAtTime(0.9, Math.max(time + 0.013, time + playbackDuration - 0.025));
+    gain.gain.exponentialRampToValueAtTime(0.001, time + playbackDuration);
+    source.start(time, start, duration);
   }
 
   private playBufferDirect(buffer: AudioBuffer, time: number, channelIndex: number) {
